@@ -260,3 +260,72 @@ plot4 <-es_fullfit %>%
   plot_modeltime_forecast(.interactive=FALSE)
 
 plotly::subplot(plot1,plot3,plot2,plot4, nrows = 2)
+
+
+
+#########
+##ARIMA##
+#########
+
+cv_split <- time_series_split(bake_1, assess="3 months", cumulative = TRUE)
+
+cv_split %>%
+  tk_time_series_cv_plan() %>% #Put into a data frame7
+  plot_time_series_cv_plan(date, sales, .interactive=FALSE)
+
+arima_model <- arima_reg(seasonal_period=365,
+                         non_seasonal_ar=5, # default max p to tune
+                         non_seasonal_ma=5, # default max q to tune
+                         seasonal_ar=2, # default max P to tune
+                         seasonal_ma=2, #default max Q to tune
+                         non_seasonal_differences=2, # default max d to tune
+                         seasonal_differences=2) %>%
+  set_engine("auto_arima") %>%
+  fit(sales~date, data=training(cv_split))
+
+arima_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(arima_model) %>%
+  fit(data=training(cv_split))
+
+cv_results <- modeltime_calibrate(arima_model,
+                                  new_data = testing(cv_split))
+
+cv_results %>%
+  modeltime_accuracy() %>%
+  table_modeltime_accuracy( .interactive = FALSE)
+
+arima_fullfit <- cv_results %>%
+  modeltime_refit(data = bake_1)
+
+arima_preds <- arima_fullfit %>%
+  modeltime_forecast(new_data = bake_1) %>%
+  rename(date=.index, sales=.value) %>%
+  select(date, sales) %>%
+  full_join(., y=bake_1, by="date") %>%
+  select(date, sales)
+
+arima_fullfit %>%
+  modeltime_forecast(h = "3 months", actual_data = bake_1) %>%
+  plot_modeltime_forecast(.interactive=FALSE)
+
+
+plot1 <- cv_results %>%
+  modeltime_forecast(new_data = testing(cv_split),
+                     actual_data = bake_1) %>%
+  plot_modeltime_forecast(.interactive=TRUE)
+
+plot2 <-es_fullfit %>%
+  modeltime_forecast(h = "3 months", actual_data = bake_1) %>%
+  plot_modeltime_forecast(.interactive=FALSE)
+
+plot3 <- cv_results %>%
+  modeltime_forecast(new_data = testing(cv_split),
+                     actual_data = train) %>%
+  plot_modeltime_forecast(.interactive=TRUE)
+
+plot4 <-es_fullfit %>%
+  modeltime_forecast(h = "3 months", actual_data = train) %>%
+  plot_modeltime_forecast(.interactive=FALSE)
+
+plotly::subplot(plot1,plot3,plot2,plot4, nrows = 2)
