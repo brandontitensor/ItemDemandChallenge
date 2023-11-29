@@ -11,6 +11,7 @@ library(doParallel)
 library(timetk)
 library(embed)
 library(modeltime)
+library(forecast)
 
 ####################
 ##WORK IN PARALLEL##
@@ -267,7 +268,50 @@ plotly::subplot(plot1,plot3,plot2,plot4, nrows = 2)
 ##ARIMA##
 #########
 
-cv_split <- time_series_split(bake_1, assess="3 months", cumulative = TRUE)
+train_1 <- my_data %>%
+  filter(store==6, item==12)
+test_1 <- test_data %>%
+  filter(store==6, item==12)
+
+train_2 <- my_data %>%
+  filter(store==8, item==20)
+test_2 <- test_data %>%
+  filter(store==8, item==20)
+
+
+my_recipe1 <- recipe(sales~., data=train_1)  %>%
+  step_date(date, features="doy") %>%
+  step_range(date_doy, min=0, max=pi) %>%
+  step_mutate(sinDOY=sin(date_doy), cosDOY=cos(date_doy)) %>%
+  step_date(date, features = "dow") %>% 
+  step_date(date, features = "month") %>% 
+  step_date(date, features = "year") %>% 
+  # step_holiday(date, holidays = timeDate::listHolidays()) %>% 
+  step_mutate(date_weekend = ifelse(date_dow %in% c("Sun","Sat"), 1, 0)) %>% 
+  step_lencode_mixed(all_nominal_predictors(), outcome = vars(sales)) %>% 
+  # step_lag(date,lag = 365) %>% 
+  step_naomit(all_predictors())
+
+prepped_recipe1 <- prep(my_recipe1, verbose = T)
+bake_1 <- bake(prepped_recipe1, new_data = NULL)
+
+my_recipe2 <- recipe(sales~., data=train_2)  %>%
+  step_date(date, features="doy") %>%
+  step_range(date_doy, min=0, max=pi) %>%
+  step_mutate(sinDOY=sin(date_doy), cosDOY=cos(date_doy)) %>%
+  step_date(date, features = "dow") %>% 
+  step_date(date, features = "month") %>% 
+  step_date(date, features = "year") %>% 
+  # step_holiday(date, holidays = timeDate::listHolidays()) %>% 
+  step_mutate(date_weekend = ifelse(date_dow %in% c("Sun","Sat"), 1, 0)) %>% 
+  step_lencode_mixed(all_nominal_predictors(), outcome = vars(sales)) %>% 
+  # step_lag(date,lag = 365) %>% 
+  step_naomit(all_predictors())
+
+prepped_recipe2 <- prep(my_recipe2, verbose = T)
+bake_2 <- bake(prepped_recipe2, new_data = NULL)
+
+cv_split <- time_series_split(bake_2, assess="3 months", cumulative = TRUE)
 
 cv_split %>%
   tk_time_series_cv_plan() %>% #Put into a data frame7
@@ -284,7 +328,7 @@ arima_model <- arima_reg(seasonal_period=365,
   fit(sales~date, data=training(cv_split))
 
 arima_wf <- workflow() %>%
-  add_recipe(my_recipe) %>%
+  add_recipe(my_recipe2) %>%
   add_model(arima_model) %>%
   fit(data=training(cv_split))
 
@@ -296,18 +340,14 @@ cv_results %>%
   table_modeltime_accuracy( .interactive = FALSE)
 
 arima_fullfit <- cv_results %>%
-  modeltime_refit(data = bake_1)
-
-arima_preds <- arima_fullfit %>%
-  modeltime_forecast(new_data = bake_1) %>%
-  rename(date=.index, sales=.value) %>%
-  select(date, sales) %>%
-  full_join(., y=bake_1, by="date") %>%
-  select(date, sales)
+  modeltime_refit(data = bake_2)
 
 arima_fullfit %>%
-  modeltime_forecast(h = "3 months", actual_data = bake_1) %>%
-  plot_modeltime_forecast(.interactive=FALSE)
+modeltime_forecast(
+                   new_data = test_2,
+                   actual_data = train_2
+) %>%
+plot_modeltime_forecast(.interactive=TRUE)
 
 
 plot1 <- cv_results %>%
@@ -315,17 +355,105 @@ plot1 <- cv_results %>%
                      actual_data = bake_1) %>%
   plot_modeltime_forecast(.interactive=TRUE)
 
-plot2 <-es_fullfit %>%
-  modeltime_forecast(h = "3 months", actual_data = bake_1) %>%
+plot2 <-arima_fullfit %>%
+  modeltime_forecast( actual_data = bake_1) %>%
   plot_modeltime_forecast(.interactive=FALSE)
 
 plot3 <- cv_results %>%
   modeltime_forecast(new_data = testing(cv_split),
-                     actual_data = train) %>%
+                     actual_data = bake_2) %>%
   plot_modeltime_forecast(.interactive=TRUE)
 
-plot4 <-es_fullfit %>%
-  modeltime_forecast(h = "3 months", actual_data = train) %>%
+plot4 <-arima_fullfit %>%
+  modeltime_forecast( actual_data = bake_2) %>%
   plot_modeltime_forecast(.interactive=FALSE)
+
+plotly::subplot(plot1,plot3,plot2,plot4, nrows = 2)
+
+
+#################
+##PROPHET MODEL##
+#################
+
+train_1 <- my_data %>%
+  filter(store==6, item==12)
+test_1 <- test_data %>%
+  filter(store==6, item==12)
+
+cv_split1 <- time_series_split(train_1, assess="3 months", cumulative = TRUE)
+
+prophet_model1 <- prophet_reg() %>%
+  set_engine(engine = "prophet") %>%
+  fit(sales ~ date, data = training(cv_split1))
+
+cv_results1 <- modeltime_calibrate(prophet_model1,
+                                  new_data = testing(cv_split1))
+
+cv_results1 %>%
+  modeltime_accuracy() %>%
+  table_modeltime_accuracy( .interactive = FALSE)
+
+prophet_fullfit1 <- cv_results1 %>%
+  modeltime_refit(data = train_1)
+
+prophet_fullfit1 %>%
+  modeltime_forecast(
+    new_data = test_1,
+    actual_data = train_1
+  ) %>%
+  plot_modeltime_forecast(.interactive=TRUE)
+
+
+plot1 <- cv_results1 %>%
+  modeltime_forecast(new_data = testing(cv_split1),
+                     actual_data = train_1) %>%
+  plot_modeltime_forecast(.interactive=TRUE)
+
+plot2 <-prophet_fullfit1 %>%
+  modeltime_forecast( actual_data = train_1) %>%
+  plot_modeltime_forecast(.interactive=FALSE)
+
+
+############################DATA 2###################################
+
+
+train_2 <- my_data %>%
+  filter(store==8, item==20)
+test_2 <- test_data %>%
+  filter(store==8, item==20)
+
+cv_split2 <- time_series_split(train_2, assess="3 months", cumulative = TRUE)
+
+prophet_model2 <- prophet_reg() %>%
+  set_engine(engine = "prophet") %>%
+  fit(sales ~ date, data = training(cv_split2))
+
+cv_results2 <- modeltime_calibrate(prophet_model2,
+                                   new_data = testing(cv_split2))
+
+cv_results2 %>%
+  modeltime_accuracy() %>%
+  table_modeltime_accuracy( .interactive = FALSE)
+
+prophet_fullfit2 <- cv_results2 %>%
+  modeltime_refit(data = train_2)
+
+prophet_fullfit2 %>%
+  modeltime_forecast(
+    new_data = test_2,
+    actual_data = train_2
+  ) %>%
+  plot_modeltime_forecast(.interactive=TRUE)
+
+
+plot3 <- cv_results2 %>%
+  modeltime_forecast(new_data = testing(cv_split2),
+                     actual_data = train_2) %>%
+  plot_modeltime_forecast(.interactive=TRUE)
+
+plot4 <-prophet_fullfit2 %>%
+  modeltime_forecast( actual_data = train_2) %>%
+  plot_modeltime_forecast(.interactive=FALSE)
+
 
 plotly::subplot(plot1,plot3,plot2,plot4, nrows = 2)
